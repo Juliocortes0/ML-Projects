@@ -1,0 +1,1021 @@
+---
+title: "Student Performance Analysis"
+author: "Julio Cortes, Maria Cuenca, Marta Marinozzi"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+    css: custom.css
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    latex_engine: xelatex
+    extra_dependencies: ["pdfpages"]
+---
+
+\newpage
+\tableofcontents
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, results = "markup", comment = NA)
+```
+<style>
+.code-container {
+    display: none;
+    border: 1px solid #ddd;
+    padding: 10px;
+    margin-top: 10px;
+    background-color: #f9f9f9;
+}
+.code-container pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+</style>
+<script>
+function toggleCode(id, buttonId) {
+    var codeContainer = document.getElementById(id);
+    var button = document.getElementById(buttonId);
+    if (codeContainer.style.display === "none") {
+        codeContainer.style.display = "block";
+        button.innerText = "Hide Code";
+    } else {
+        codeContainer.style.display = "none";
+        button.innerText = "Show Code";
+    }
+}
+</script>
+
+
+# INTRODUCTION
+
+Students’ academic performance is shaped by a myriad of factors—ranging from the hours they study and the support they receive at home, to socioeconomic conditions and school quality. Understanding these relationships can offer insights into how best to improve student outcomes and inform resource allocation. In this project, we analyze a dataset of 6,607 students, each described by 20 variables that capture both academic and personal attributes, with the aim of discovering which factors most strongly correlate with final exam performance.
+
+We begin with exploratory data analysis to understand the distribution of study hours, attendance, previous scores, and other quantitative predictors, as well as the influence of categorical factors such as parental involvement and access to resources. From there, we fit a variety of statistical and machine-learning models—linear regression, generalized additive models (GAMs), Poisson regression, logistic regression, support vector machines (SVMs), and neural networks—to compare their predictive power and interpretability. Our pipeline includes data cleaning steps, handling missing values, and even oversampling techniques (e.g., SMOTE) for imbalanced classes. By systematically exploring both conventional and more advanced approaches, we aim to illuminate key patterns in student achievement, providing a multi-faceted view of how diverse factors—from motivation level to family income—can help or hinder academic success.
+
+```{r install-libs, include=FALSE}
+options(repos = c(CRAN = "https://cran.rstudio.com/"))
+
+install.packages(c("mgcv", "nnet", "e1071", "caret", "neuralnet", 
+                   "ggplot2", "gridExtra", "dplyr", "boot", 
+                   "tidyverse", "kernlab", "RColorBrewer", "smotefamily","car"))
+
+library(mgcv)      
+library(nnet)      
+library(e1071)     
+library(caret)     
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(boot)
+library(tidyverse)
+library(e1071)
+library(caret)
+library(neuralnet)
+library(kernlab)   
+library(RColorBrewer)
+library(smotefamily)  
+library(car)
+
+# Set a default ggplot theme
+theme_set(theme_bw())
+
+```
+
+# DATA LOADING
+
+```{r}
+Students <- read.csv(
+  "StudentPerformanceFactors.csv",
+  header = TRUE,
+  stringsAsFactors = TRUE
+)
+
+str(Students) 
+#head(Students)
+
+```
+The dataset contains 6607 individual student records and 20 variables that represent both academic and personal attributes. Among these variables, there are integer columns—such as Hours_Studied, Attendance, Sleep_Hours, Previous_Scores, Tutoring_Sessions, Physical_Activity, and Exam_Score—that capture quantitative measures of each student’s study habits and performance (with exam scores likely on a scale from 0 to 100). Additionally, a number of columns are categorical (factors), covering aspects such as Parental_Involvement, Access_to_Resources, Motivation_Level, Internet_Access, and Extracurricular_Activities, which help describe the environment and resources available to students. The dataset also includes demographic or contextual variables such as Family_Income, Teacher_Quality, School_Type, Peer_Influence, Gender, and Distance_from_Home, plus a special factor noting if the student has Learning_Disabilities. Lastly, Parental_Education_Level ranges from High School to Postgraduate (with some missing categories), which further situates a student's socio-academic background. Together, these variables form a rich dataset for analyzing how diverse factors—ranging from study intensity to family context—relate to final exam performance.
+
+# EXPLORATORY DATA ANALYSIS AND BASIC DATA CHECKS
+
+## Summary statistics for each column
+```{r}
+captured_output<-capture.output(summary(Students))
+partial_output<-captured_output[1:4]
+cat(partial_output,sep ="\n")
+```
+## Check for missing values in each column 
+```{r}
+missing_counts<-colSums(is.na(Students))
+captured_output<-capture.output(missing_counts)
+partial_output<-captured_output[1:4]
+cat(partial_output,sep ="\n")
+```
+
+The summary table of all 21 variables in the dataset shows both numeric distributions (via minimum, quartiles, median, mean, and maximum) and category counts. For example, Hours_Studied ranges from 1 to 44 hours (median around 20), while Attendance lies between 60% and 100%, with a median of 80%. Categorical variables such as Parental_Involvement, Access_to_Resources, and Family_Income are split into Low, Medium, and High groups, each with its own count of records. Other variables, like Extracurricular_Activities (“Yes” vs. “No”) and Gender (“Male” vs. “Female”), reflect binary or multi-category data. The table also highlights key academic factors (e.g., Sleep_Hours around 4–10, Exam_Score ranging 55–101) and personal attributes (e.g., Motivation_Level, Learning_Disabilities) to provide a broad view of each student’s context.
+
+Notably, there are no missing values in any of the variables.
+
+
+# WHY DIFFERENT MODELS?
+
+We began our analysis by fitting linear regression models to understand the fundamental relationships between continuous features (e.g., hours studied, attendance) and exam scores,allowing us to quickly identify which predictors had statistically significant linear effects.Recognizing signs of non-linearity in variables like Previous_Scores, we turned to Generalized Additive Models (GAMs), which provide additional flexibility by modeling non-linear relationships without overly complex transformations.Since some aspects of student performance data could be viewed as count-like outcomes (e.g., number of questions correct),we briefly explored Poisson regression to account for discrete distributions. For binary outcomes, we applied logistic regression, which is well-suited for binary classification and interpretable. To handle more complex, possibly non-linear decision boundaries in predicting performance categories, we utilized Support Vector Machines (SVMs), leveraging kernels (radial, linear, etc.) to find optimal separating hyperplanes. Finally, we experimented with Neural Networks because they can automatically learn intricate, non-linear patterns from multiple features and may capture interactions that linear methods can miss.By sequentially introducing these methods, we balanced interpretability with predictive power, tailoring each model choice to the nature of the data and specific research questions.
+
+
+# DATA CLEANUP AND DROPPING UNWANTED ROWS/COLUMNS
+
+In this step, we addressed data inconsistencies and missing values to ensure our analysis would be both accurate and efficient. First, we replaced any exam scores of “101” with “100” to correct what was likely an error or outlier.
+```{r}
+Students$Exam_Score[Students$Exam_Score == 101] <- 100
+```
+Next, we checked for missing and null values across all columns, which verified that there were no cells containing NA or NULL. 
+```{r}
+sum(is.na(Students))
+sum(is.null(Students))
+```
+ We then removed rows where the factors for “Teacher_Quality” and “Parental_Education_Level” were empty strings, as those observations lacked meaningful information for our models. 
+```{r}
+Students <- Students[Students$Teacher_Quality != "" & 
+                     Students$Parental_Education_Level != "", ]
+```
+Finally, we attempted to drop rows with empty strings for “Distance_from_Home” but found that this left us with no data, so instead, we removed the entire column. These cleaning steps helped ensure that our dataset was consistent and complete before proceeding with more advanced analyses.
+```{r}
+Students <- Students %>%
+  select(-Distance_from_Home)
+
+```
+
+
+# EXPLORATORY VISUALS: EFFECT OF CATEGORICAL VARIABLES ON EXAM_SCORE
+  
+In this section, we explored how various categorical factors—such as parental involvement, access to resources, motivation level, family income, and others—relate to students’ exam scores. By creating boxplots for each categorical variable, we could quickly discern how the distribution of exam scores differs across groups (e.g., “Low,” “Medium,” and “High” for certain factors). The code loops through the list of these categorical variables and generates individual boxplots, each highlighting potential differences in mean scores, overall score spread, and outliers. Finally, we arranged all of these plots in a grid layout to facilitate easy comparisons between different predictors. This visual analysis serves as a preliminary step to identify which categories might have the strongest relationships with student performance.
+
+<button id="toggle-button1" onclick="toggleCode('code-container1', 'toggle-button1')">Show Code</button>
+<div id="code-container1" class="code-container">
+<pre>
+```{r effects_of_cat_vars, fig.width=12, fig.height=8}
+# Define a vector of categorical columns
+categorical_cols <- c("Parental_Involvement", "Access_to_Resources", 
+                      "Motivation_Level", "Family_Income", "Teacher_Quality", 
+                      "School_Type", "Peer_Influence", "Learning_Disabilities", 
+                      "Parental_Education_Level", "Gender")
+
+plots <- list()
+
+# Loop through each categorical variable and create a ggplot boxplot
+for (cat_var in categorical_cols) {
+  p <- ggplot(Students, aes(x = .data[[cat_var]], y = Exam_Score)) +
+    geom_boxplot(fill = "lightblue") +
+    labs(title = paste("Exam Score by", cat_var),
+         x = cat_var,
+         y = "Exam Score") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(hjust = 1))  # Rotate x-axis labels for readability
+  plots[[cat_var]] <- p
+}
+
+# Adjust the number of columns depending on the screen space available
+do.call(grid.arrange, c(plots, ncol = 3))
+
+```
+</pre> </div> <p>
+
+Higher categories of involvement or resources often showed elevated median scores, while students with learning disabilities registered slightly lower medians (though there are notable exceptions). Interestingly, school type (public vs. private) did not exhibit a dramatic effect, and the distributions for female and male students overlapped substantially, indicating a relatively minor difference in performance by gender. Ultimately, these figures highlight the importance of home environment, peer support, and motivation in shaping student achievement.
+
+# LINEAR MODELS
+
+We begun with a simple model containing only an intercept and progressively introduced categorical and continuous predictors (e.g., Parental_Involvement, Hours_Studied). At each step, we checked for statistical significance (using anova and drop1) and collinearity (using vif), removing non-significant variables (such as Gender, School_Type, and Sleep_Hours). We also explored potential interactions (e.g., Gender * Hours_Studied), retaining them only if they improved the model. This stepwise approach helped refine the linear regression model to identify key predictors of students’ exam scores while maintaining good model fit and low collinearity. 
+
+<button id="toggle-button2" onclick="toggleCode('code-container2', 'toggle-button2')">Show Code</button>
+<div id="code-container2" class="code-container">
+<pre>
+```{r}
+# We fit a model that does not take into account any predictor
+Exam_Scores.0 <- lm(Exam_Score ~ 1, data = Students)
+coef(Exam_Scores.0)
+
+# Testing several categorical variables
+Exam_Scores.1 <- lm(Exam_Score ~ Parental_Involvement, data = Students)
+coef(Exam_Scores.1)
+summary(Exam_Scores.1)
+```
+</pre> </div> <p>
+
+Looking at the p-values, we can see that there is strong evidence that the mean of Exam Score for Low and Medium Parental involvement differ from High Parental Involvement.
+
+We then compared the models with Anova.
+```{r}
+anova(Exam_Scores.0, Exam_Scores.1)
+```
+We have strong evidence that including Parental involvement can help to better represent the data.
+
+We then added other predictors to the model, and performed collinearity checks. 
+```{r}
+Exam_Scores.2 <- update(Exam_Scores.1, 
+  . ~ . + Access_to_Resources + Extracurricular_Activities +
+    Motivation_Level + Internet_Access + Family_Income + Teacher_Quality + 
+    School_Type + Peer_Influence + Learning_Disabilities + 
+    Parental_Education_Level + Gender)
+
+# collinearity check 
+#vif(Exam_Scores.2)
+```
+The Generalized Variance Inflation Factors (GVIFs) were all very close to 1 (see Appendix), which indicated that there is no serious collinearity issue in the model.
+
+To check whether it made sense to keep the categorical values we used the drop1() function.
+```{r}
+drop1(Exam_Scores.2, test = "F") 
+```
+There is strong evidence that all the categorical variables except for Gender and School type play a role in impacting the Exam_Score.
+
+We tested continuous and categorical variables by updating the previous model, and checked again for collinearity. 
+
+<button id="toggle-button3" onclick="toggleCode('code-container3', 'toggle-button3')">Show Code</button>
+<div id="code-container3" class="code-container">
+<pre>
+```{r}
+Exam_Scores.3 <- update(Exam_Scores.2,
+  . ~ . + Hours_Studied + Attendance +
+    Sleep_Hours + Previous_Scores + Tutoring_Sessions +
+    Physical_Activity)
+
+drop1(Exam_Scores.3, test = "F")
+vif(Exam_Scores.3)
+```
+</pre> </div> <p>
+
+There is strong evidence that all predictors except for Sleep Hours, Gender and School type play a role therefore we want to drop these three variables. 
+Collinearity check confirmed that all GVIF are below 5, meaning that there is no serious collinearity issue in the model.
+
+We then tested whether adding interactions between certain variables (Gender and Hours_Studied, Gender and Peer_Influence, Motivation_Level and Hours_Studied) significantly improved the linear model predicting Exam_Score.
+
+<button id="toggle-button4" onclick="toggleCode('code-container4', 'toggle-button4')">Show Code</button>
+<div id="code-container4" class="code-container">
+<pre>
+```{r}
+Exam_Scores.3.1 <- update(Exam_Scores.3,
+                          . ~ . + Gender*Hours_Studied)
+
+Exam_Scores.3.2 <- update(Exam_Scores.3,
+                          . ~ . + Gender*Peer_Influence)
+
+summary(Exam_Scores.3.2)
+```
+</pre> </div> <p>
+
+Both interactions yielded very small effect estimates and high p-values, indicating no statistically significant difference in how peer influence relates to exam scores by gender. 
+
+In addition to the interaction terms, variables such as School_TypePublic, Sleep_Hours, and GenderMale also showed high p-values, suggesting that these factors are not statistically significant predictors of exam scores in this dataset. We therefore removed them from our dataset. 
+
+```{r}
+Students1 <- dplyr::select(Students, -School_Type, -Gender, -Sleep_Hours)
+```
+
+We then updated our model accordingly and added the remaining variables and performed collinearity check. 
+
+<button id="toggle-button5" onclick="toggleCode('code-container5', 'toggle-button5')">Show Code</button>
+<div id="code-container5" class="code-container">
+<pre>
+```{r}
+Exam_Scores.4 <- lm(Exam_Score ~ Parental_Involvement+ Access_to_Resources + Extracurricular_Activities +
+                      Motivation_Level + Internet_Access + Family_Income + Teacher_Quality + 
+                      Peer_Influence + Learning_Disabilities + Parental_Education_Level + 
+                      Hours_Studied + Attendance + Previous_Scores + Tutoring_Sessions +
+                      Physical_Activity, data = Students1)
+
+vif(Exam_Scores.4)
+```
+</pre> </div> <p>
+
+All values are extremely close to 1, indicating that none of the predictors exhibits problematic levels of collinearity. 
+
+We explored potential interaction effects by testing a model that incorporates an interaction term between motivation level and hours studied.
+
+<button id="toggle-button6" onclick="toggleCode('code-container6', 'toggle-button6')">Show Code</button>
+<div id="code-container6" class="code-container">
+<pre>
+```{r}
+Exam_Scores.5 <- update(Exam_Scores.4,
+                        . ~ . + Motivation_Level*Hours_Studied)
+summary(Exam_Scores.5)
+```
+</pre> </div> <p>
+
+The regression model reveals that exam scores are significantly influenced by various factors, including parental involvement, access to resources, motivation level, family income, teacher quality, and hours studied. Notably, the interaction term between motivation level and hours studied indicates that students with low motivation benefit differently from studying compared to those with higher motivation. The model explains 71.7% of the variance in exam scores, showing strong predictive power. Key predictors like hours studied and previous scores positively impact performance, while challenges such as low family income and limited resources negatively affect outcomes. This underscores the importance of addressing both personal and environmental factors to improve student achievement.
+
+
+The drop1 function was used to assess the impact of dropping each term from the model by performing an F-test and comparing the resulting models.
+
+<button id="toggle-button6.2" onclick="toggleCode('code-container6.2', 'toggle-button6.2')">Show Code</button>
+<div id="code-container6.2" class="code-container">
+<pre>
+```{r}
+drop1(Exam_Scores.5, test = "F")
+```
+</pre> </div> <p>
+
+The output shows that most predictors have highly significant contributions to the model. 
+We also found an interaction between motivation level and hours studied, however there is extremely weak (no) evidence (0.077) that the new model could bring an improvement. 
+
+# CHECK FOR NON-LINEARITY (QUADRATIC, GAM)
+We tested the effect of hours of study on the exam scores:
+```{r}
+gg.students <- ggplot(data = Students1,
+                      mapping = aes(y = Exam_Score,
+                                    x = Previous_Scores)) +
+  geom_point()
+gg.students + geom_smooth()
+```
+
+A close look revealed that the relationship might not be fully linear, therefore we decided to model the non-linearity shown by the smoother with a quadratic effect and tested quadratic term with an F-test.
+
+```{r}
+Exam_Scores.6 <- update(Exam_Scores.4, . ~ . + I(Previous_Scores^2))
+anova(Exam_Scores.4,Exam_Scores.6)
+```
+There is some evidence that Previous Scores needs a quadratic term, so we updated our model accordingly. 
+
+<button id="toggle-button7" onclick="toggleCode('code-container7', 'toggle-button7')">Show Code</button>
+<div id="code-container7" class="code-container">
+<pre>
+```{r}
+Exam_Scores.6 <- lm(Exam_Score ~ Parental_Involvement + Access_to_Resources + Extracurricular_Activities + 
+                      Motivation_Level + Internet_Access + Family_Income + Teacher_Quality + 
+                      Peer_Influence + Learning_Disabilities + Parental_Education_Level + 
+                      Hours_Studied + Attendance + Previous_Scores + Tutoring_Sessions + 
+                      Physical_Activity +
+                      poly(Previous_Scores, degree = 2),
+                    data = Students)
+
+
+Exam_Scores.7 <- gam(Exam_Score~ Parental_Involvement + Access_to_Resources + Extracurricular_Activities + 
+                       Motivation_Level + Internet_Access + Family_Income + Teacher_Quality + s(Hours_Studied) +
+                       Peer_Influence + Learning_Disabilities + Parental_Education_Level + 
+                       + s(Attendance) + s(Previous_Scores) + Tutoring_Sessions + 
+                       Physical_Activity,
+                     data = Students)
+
+summary(Exam_Scores.7)
+
+plot(Exam_Scores.7, residuals = TRUE, select = 1)
+```
+</pre> </div> <p>
+
+Furthermore, we applied the GAM function and as a result the EDF suggested that a polynomial of degree 7 is needed for Previous Scores, a polynomial of degree 3 is needed for hours studied, and the linear relationship is confirmed for Attendance.
+
+
+# POISSON REGRESSION FOR COUNT DATA
+
+For count data, we used a Poisson model to make predictions of exam scores. Poisson is more suitable than linear prediction for count data as it predicts positive integers with adjusted variability:  
+
+<button id="toggle-button8" onclick="toggleCode('code-container8', 'toggle-button8')">Show Code</button>
+<div id="code-container8" class="code-container">
+<pre>
+```{r}
+Exam_Scores.8.1 <- glm(Exam_Score ~ Parental_Involvement + Access_to_Resources + 
+                         Motivation_Level + Family_Income + Teacher_Quality + Hours_Studied +
+                         Peer_Influence + Parental_Education_Level + 
+                         + Attendance + Previous_Scores + Tutoring_Sessions + 
+                         Physical_Activity,
+                       family = "poisson",
+                       data = Students)
+summary(Exam_Scores.8.1)
+```
+</pre> </div> <p>
+
+Significant predictors include Parental_InvolvementLow, Access_to_ResourcesLow, and Hours_Studied, among others, with their p-values indicating strong evidence against the null hypothesis. For example, Hours_Studied positively impacts exam scores significantly (p < 0.001). The intercept represents the baseline log-exam score when all predictors are at their reference levels.
+The model's residual deviance (395.45) suggests a good fit compared to the null deviance (1424.81). The AIC (39397) helps assess model parsimony. The model is suitable for count data, as it predicts positive integers with adjusted variability.
+
+<button id="toggle-button8.1" onclick="toggleCode('code-container8.1', 'toggle-button8.1')">Show Code</button>
+<div id="code-container8.1" class="code-container">
+<pre>
+```{r}
+
+set.seed(2)
+sim.data.Students.Poisson <- simulate(Exam_Scores.8.1)
+NROW(sim.data.Students.Poisson)
+#head(sim.data.Students.Poisson)
+#tail(sim.data.Students.Poisson)
+
+min(Students$Exam_Score)
+max(Students$Exam_Score)
+```
+</pre> </div> <p>
+
+Using the Poisson model, simulated exam scores were generated to mimic real-world observations. This was done with the simulate() function in R. Simulated exam scores based on the Poisson model are all positive integers, as expected. The dataset contains 6,443 rows, reflecting the number of students. The minimum and maximum observed scores are 55 and 100, respectively, aligning with real-world exam score ranges. These simulated scores are consistent with the Poisson assumption and the model's predictions.
+
+
+# LOGISTIC (BINOMIAL) REGRESSION
+
+We first normalized the Exam_Score variable by dividing its values by 100, converting it from a percentage scale (e.g., 0 to 100) to a decimal scale (e.g., 0.0 to 1.0). 
+```{r}
+Students <- Students %>%
+  mutate(Exam_Score = Exam_Score / 100)
+```
+
+Then, we created a binary variable Result, categorizing scores below 0.60 as "fail" (0) and scores 0.60 or above as "pass" (1). 
+
+```{r}
+Students <- Students %>%
+  mutate(Result = if_else(Exam_Score < 0.60, 0, 1))
+unique(Students$Result)
+summary(Students$Exam_Score)
+
+glm(Result ~ Hours_Studied,
+    family = "binomial",
+    data = Students)
+
+ggplot(data = Students,
+       mapping = aes(y = Result, x = Hours_Studied)) +
+  geom_point() +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"), se = FALSE) +
+  ylim(0, 1) +
+  geom_hline(yintercept = 0:1)
+```
+Using logistic regression, we modeled Result as a function of Hours_Studied and found that increased study hours significantly improved the likelihood of passing, with a positive coefficient of 0.30213. 
+
+In this binomial logistic regression analysis, the dataset is focused exclusively on students who scored above 50%, with Result being a binary outcome: 1 for students with an exam score of 60% or higher and 0 for those below. The plotted logistic regression line represents the probability of passing as a function of hours studied. Since the data only includes students with a positive grade, the logistic curve does not extend below 0.5, reflecting the absence of observations with Result = 0 for very low exam scores, thus limiting the model's predictive range.
+
+# SUPPORT VECTOR MACHINES
+To prepare our data for s Support Vector Machine model, we categorized the Exam_Score variable into three groups—Low, Medium, and High.  Using the case_when() function, scores less than or equal to 0.65 were labeled as Low, scores between 0.65 and 0.70 were labeled as Medium, and scores greater than 0.70 were labeled as High. This categorization provides a structured target variable for multi-class classification.
+```{r}
+Students <- Students %>%
+        mutate(Exam_Score_Category = case_when(
+                Exam_Score <= 0.65 ~ "Low",
+                Exam_Score > 0.65 & Exam_Score <= 0.70 ~ "Medium",
+                Exam_Score > 0.70 ~ "High"
+        ))
+```
+
+
+To evaluate the classification performance of Support Vector Machines (SVM), we tested two different models: one with a linear kernel and another with a radial kernel. Both models aimed to predict the Exam_Score_Category (High, Medium, Low) based on features such as Hours_Studied and Attendance. The dataset was first split into training (90%) and testing (10%) subsets, and 10-fold cross-validation was used on the training data to validate the models and assess their performance.
+
+```{r}
+## SVM Linear kernel with 10-CV validation 
+
+set.seed(123)
+
+# Split data into training and test sets
+indices <- createDataPartition(Students$Exam_Score_Category, p = 0.9, list = FALSE)
+
+train <- Students %>%
+        slice(indices)
+
+train <- train %>%
+        mutate(Exam_Score_Category = as.factor(Exam_Score_Category))
+
+# Initialize a vector to store accuracies for 10-fold cross-validation
+folds <- createFolds(train$Exam_Score_Category, k = 10)
+cv_accuracies <- numeric(length(folds))
+
+# Perform 10-fold cross-validation
+for (i in seq_along(folds)) {
+        # Create training and validation subsets for the current fold
+        fold_val <- train[folds[[i]], ]
+        fold_train <- train[-folds[[i]], ]
+        
+        # Train SVM model with linear kernel on the current training subset
+        svm_fold <- svm(
+                Exam_Score_Category ~ Hours_Studied + Attendance,
+                data = fold_train,
+                kernel = "linear",
+                scale = TRUE,
+                cost = 10
+        )
+        
+        # Predict on the validation subset
+        fold_val_pred <- predict(svm_fold, fold_val[, c("Hours_Studied", "Attendance")])
+        
+        # Calculate accuracy for the current fold
+        fold_val_truth <- fold_val$Exam_Score_Category
+        fold_val_acc <- sum(fold_val_pred == fold_val_truth) / nrow(fold_val)
+        cv_accuracies[i] <- fold_val_acc
+}
+
+# Print fold-by-fold accuracies and mean accuracy
+cat(sprintf("\nMean CV Accuracy (10-Fold): %.3f\n", mean(cv_accuracies)))
+
+# Train the final SVM model on the full training set
+final_svm <- svm(
+        Exam_Score_Category ~ Hours_Studied + Attendance,
+        data = train,
+        kernel = "linear",
+        scale = TRUE,
+        cost = 10
+)
+
+# Prepare the test set
+test <- Students %>%
+        slice(-indices)
+
+# Predict on the test set
+test_pred <- predict(final_svm, test[, c("Hours_Studied", "Attendance")])
+
+# Create confusion matrix
+conf_matrix <- confusionMatrix(as.factor(test_pred), as.factor(test$Exam_Score_Category))
+
+# Print the confusion matrix
+cat("\nConfusion Matrix on Test Data:\n")
+print(conf_matrix)
+
+```
+The linear SVM was trained with a cost parameter of 10 and achieved a mean cross-validation accuracy of 74.3%. On the test set, it achieved an overall accuracy of 72.98%, as shown in the confusion matrix. The model performed well in classifying "High" and "Low" categories but showed weaker performance for the "Medium" category. 
+
+An SVM model with a radial kernel was then trained to classify Exam_Score_Category (High, Medium, Low) based on Hours_Studied and Attendance. To address class imbalance, SMOTE (Synthetic Minority Oversampling Technique) was applied to oversample the minority classes in the training data during 10-fold cross-validation. This ensured a balanced class distribution in each fold, improving the model's ability to classify underrepresented categories.
+
+```{r}
+## Radial kernel with 10-CV Validation 
+set.seed(123)
+
+# Split data into training and test sets
+indices <- createDataPartition(Students$Exam_Score_Category, p = 0.9, list = FALSE)
+train <- Students[indices, ]
+test <- Students[-indices, ]
+
+# Ensure target variable is a factor in the training set
+train$Exam_Score_Category <- as.factor(train$Exam_Score_Category)
+
+# Initialize a vector to store accuracies for 10-fold cross-validation
+folds <- createFolds(train$Exam_Score_Category, k = 10)
+cv_accuracies <- numeric(length(folds))
+
+
+# Perform 10-fold cross-validation
+for (i in seq_along(folds)) {
+        #cat(sprintf("\n--- Fold %d ---\n", i))
+        
+        # Create training and validation subsets for the current fold
+        fold_val <- train[folds[[i]], ]
+        fold_train <- train[-folds[[i]], ]
+        
+        # Train SVM model with radial kernel on the current training subset
+        svm_fold <- svm(
+                Exam_Score_Category ~ Hours_Studied + Attendance,
+                data = fold_train,
+                kernel = "radial",
+                gamma = 5,
+                cost = 10,
+                scale = TRUE
+        )
+        
+        # Suppress the plot for cross-validation folds
+        # plot(svm_fold, train, Attendance ~ Hours_Studied)
+        
+        # Predict on the validation subset
+        fold_val_pred <- predict(svm_fold, fold_val[, c("Hours_Studied", "Attendance")])
+        
+        # Calculate accuracy for the current fold
+        fold_val_truth <- fold_val$Exam_Score_Category
+        fold_val_acc <- sum(fold_val_pred == fold_val_truth) / nrow(fold_val)
+        cv_accuracies[i] <- fold_val_acc
+        
+        #cat(sprintf("Accuracy for fold %d: %.3f\n", i, fold_val_acc))
+}
+
+# Print fold-by-fold accuracies and mean accuracy
+#cat("\nFold-by-Fold Accuracies:", paste(round(cv_accuracies, 3), collapse = ", "))
+cat(sprintf("\nMean CV Accuracy (10-Fold): %.3f\n", mean(cv_accuracies)))
+
+# Train the final SVM model on the entire training set
+svm_2 <- svm(
+        Exam_Score_Category ~ Hours_Studied + Attendance,
+        data = train,
+        kernel = "radial",
+        gamma = 5,
+        cost = 10,
+        scale = TRUE
+)
+
+# Make predictions on the test set
+test_in <- test[, c("Hours_Studied", "Attendance")]
+test_truth <- as.factor(test$Exam_Score_Category)
+test_pred <- predict(svm_2, test_in)
+```
+#plot
+<button id="toggle-button11" onclick="toggleCode('code-container11', 'toggle-button11')">Show Code</button>
+<div id="code-container11" class="code-container">
+<pre>
+
+```{r}
+plot(svm_2, train, Attendance ~ Hours_Studied)
+```
+</pre> </div> <p>
+```{r}
+# Evaluate the final model's performance on the test set
+conf_matrix <- confusionMatrix(as.factor(test_pred), test_truth)
+cat("\nConfusion Matrix on Test Data:\n")
+print(conf_matrix)
+```
+The final radial kernel SVM with SMOTE achieved an overall test accuracy of 72.2%, as shown in the confusion matrix. Sensitivity and specificity metrics indicate improved performance for the minority "High" class compared to the non-SMOTE approach. The classification plot demonstrates the decision boundaries created by the SVM, effectively separating data points into their respective categories based on the input features. This approach highlights the effectiveness of combining SMOTE with an SVM to handle imbalanced datasets.
+
+
+We then evaluated an SVM model with a radial kernel to classify Exam_Score_Category (High, Medium, Low) using Hours_Studied and Attendance as predictors. To address class imbalance, we applied SMOTE (Synthetic Minority Oversampling Technique) during 10-fold cross-validation, oversampling minority categories in the training data to improve classification accuracy. 
+```{r}
+## 10-FOLD CROSS VALIDATION (ADD-ON) FOR SVM WITH SMOTE
+cat("### 10-Fold Cross Validation on 'train_data' (Oversampled per fold) ###\n")
+# 1) Create 10 folds from your existing 'train_data'
+set.seed(123)  # for reproducibility
+folds <- createFolds(train$Exam_Score_Category, k = 10)
+
+# 2) Initialize a vector to store accuracies
+cv_accuracies <- numeric(length(folds))
+
+# 3) Loop through each fold
+i <- 1
+for (fold_idx in folds) {
+        
+        #cat("\n--- Fold", i, "---\n")
+        
+        # 'fold_idx' are the row indices for the validation portion
+        fold_val <- train[ fold_idx, ]
+        fold_train <- train[-fold_idx, ]
+        
+        # 3a) Perform SMOTE on 'fold_train' (like your original code does)
+        smote_result_fold <- SMOTE(
+                X = fold_train[, c("Hours_Studied", "Attendance")],
+                target = fold_train$Exam_Score_Category,
+                K = 5,
+                dup_size = 2
+        )
+        oversampled_fold <- smote_result_fold$data
+        
+        # Convert 'class' to factor
+        oversampled_fold$class <- as.factor(oversampled_fold$class)
+        
+        # 3b) Train SVM on oversampled data
+        svm_fold <- ksvm(
+                as.matrix(oversampled_fold[, c("Hours_Studied", "Attendance")]),
+                oversampled_fold$class,
+                type = "C-svc",
+                kernel = "rbfdot",
+                C = 200,
+                scaled = c()
+        )
+        
+        # 3c) Predict on 'fold_val'
+        fold_val_pred <- predict(
+                svm_fold, 
+                newdata = as.matrix(fold_val[, c("Hours_Studied", "Attendance")])
+        )
+        
+        #3d) Calculate accuracy on this fold
+        fold_val_acc <- sum(fold_val_pred == fold_val$Exam_Score_Category) / nrow(fold_val)
+        cv_accuracies[i] <- fold_val_acc
+        i <- i + 1
+}
+
+# 4) Print out all fold accuracies and their mean
+cat(sprintf("\nMean CV Accuracy (10-Fold): %.3f\n", mean(cv_accuracies)))
+# Generate plots for visualization after cross-validation
+#cat("\n### Generating Decision Boundary Plot ###\n")
+
+# Generate grid for visualization
+hours_grid <- seq(min(train$Hours_Studied), max(train$Hours_Studied), length.out = 200)
+attendance_grid <- seq(min(train$Attendance), max(train$Attendance), length.out = 200)
+grid_points <- expand.grid(Hours_Studied = hours_grid, Attendance = attendance_grid)
+
+# Use the last trained SVM model for predictions (from the final fold)
+grid_pred <- predict(svm_fold, newdata = as.matrix(grid_points), type = "response")
+grid_points$Predicted_Class <- as.factor(grid_pred)
+grid_points$Predicted_Class_Numeric <- as.numeric(grid_pred)
+
+# Plot decision boundary and training data
+plot <- ggplot() +
+        geom_tile(data = grid_points, aes(x = Hours_Studied, y = Attendance, fill = Predicted_Class), alpha = 0.5) +
+        geom_contour(data = grid_points, aes(x = Hours_Studied, y = Attendance, z = Predicted_Class_Numeric), 
+                     color = "black", size = 0.2, linetype = "solid") +
+        geom_point(data = train, aes(x = Hours_Studied, y = Attendance, color = as.factor(Exam_Score_Category)), size = 2) +
+        scale_fill_brewer(palette = "Set1", name = "Predicted Class") +
+        scale_color_brewer(palette = "Set1", name = "True Class") +
+        labs(
+                title = "SVM Decision Boundary with rbfdot Kernel and Contour Lines",
+                x = "Hours Studied",
+                y = "Attendance"
+        ) +
+        theme_minimal()
+
+
+
+print(plot)
+```
+The SVM model was trained on each fold, and its performance was assessed through cross-validation, achieving a mean accuracy of 70.5%. Additionally, we visualized the decision boundaries of the final model, which highlighted the model's ability to classify data points into categories based on feature values.
+
+The graph shows that high attendance (>90%) and over 30 study hours lead to high performance, while low attendance (<70%) and under 10 hours result in low performance. Medium performers fall in between, highlighting the need to balance attendance and study hours to improve outcomes for at-risk students.
+```{r}
+test_pred <- predict(
+  svm_fold,
+  newdata = as.matrix(test[, c("Hours_Studied", "Attendance")])
+)
+
+conf_matrix <- confusionMatrix(
+  as.factor(test_pred),
+  as.factor(test$Exam_Score_Category)
+)
+
+# Print the confusion matrix
+cat("\nConfusion Matrix on Test Data:\n")
+print(conf_matrix)
+
+```
+The model was then tested on a separate test set, achieving an overall accuracy of 67.24%, as shown in the confusion matrix. The class-wise balanced accuracy was highest for the "High" category (83.13%) and slightly lower for the "Low" (77.55%) and "Medium" (67.79%) categories.
+
+In general, the 10-fold cross-validation demonstrated consistent performance, with mean accuracies indicating reliable generalization across folds. The linear kernel showed clear separation in simpler data structures, while the radial kernel, with its non-linear decision boundaries, performed better in capturing more complex patterns.
+
+The radial kernel SVM outperformed the linear kernel, achieving higher cross-validation accuracy and better capturing non-linear relationships between hours studied and attendance. This suggests the radial kernel is better suited for this dataset's complexity.
+
+# NEURAL NETWORKS
+
+We trained the neural network to classify Exam_Score_Category (High, Medium, Low) based on predictors such as Hours_Studied. The data was preprocessed by normalizing the features, applying one-hot encoding to the target variable, and using SMOTE to address class imbalance by oversampling minority categories. The neural network was configured with two hidden layers (7 and 5 nodes) and a learning rate of 0.01. A 10-fold cross-validation approach was used to evaluate the model's performance, with accuracy and confusion matrices calculated for each fold.
+
+```{r}
+# Normalization -----
+normalize <- function(x) {
+        if (max(x) == min(x)) return(rep(0, length(x)))  
+        (x - min(x)) / (max(x) - min(x))
+}
+
+one_hot_target <- function(df) {
+        df %>%
+                mutate(
+                        High   = ifelse(Exam_Score_Category == "High", 1, 0),
+                        Medium = ifelse(Exam_Score_Category == "Medium", 1, 0),
+                        Low    = ifelse(Exam_Score_Category == "Low", 1, 0)
+                ) %>%
+                select(-Exam_Score_Category)  
+}
+
+```
+
+
+```{r}
+# Define the main training and evaluation function 
+do_training_and_eval <- function(train_raw_data, test_raw_data) {
+        # Preprocess the train set
+        train_prep_local <- train_raw_data %>%
+                one_hot_target() %>%
+                mutate(across(where(is.factor), as.numeric)) %>%
+                mutate(across(where(is.numeric), normalize)) %>%
+                mutate(
+                        Category = factor(
+                                case_when(
+                                        High == 1   ~ "High",
+                                        Medium == 1 ~ "Medium",
+                                        Low == 1    ~ "Low"
+                                ),
+                                levels = c("High", "Medium", "Low")
+                        )
+                )
+        
+        # oversampling the training set
+        train_upsampled_local <- upSample(
+                x    = train_prep_local %>% select(-High, -Medium, -Low, -Category),
+                y    = train_prep_local$Category,
+                list = FALSE
+        ) %>%
+                mutate(
+                        High   = ifelse(Class == "High", 1, 0),
+                        Medium = ifelse(Class == "Medium", 1, 0),
+                        Low    = ifelse(Class == "Low", 1, 0)
+                ) %>%
+                select(-Class)
+        
+        # Preprocess the test set
+        test_prep_local <- test_raw_data %>%
+                one_hot_target() %>%
+                mutate(across(where(is.factor), as.numeric)) %>%
+                mutate(across(where(is.numeric), normalize))
+        
+        # Separate input and output for test
+        test_in_local    <- test_prep_local %>% select(-High, -Medium, -Low)
+        test_truth_local <- test_prep_local %>% select(High, Medium, Low)
+        
+        # Train the neural network
+        set.seed(123)
+        Students_net <- neuralnet(
+                High + Medium + Low ~ .,
+                data = train_upsampled_local,
+                hidden = c(7, 5),  # 2 hidden layers (5 nodes, then 4 nodes)
+                learningrate = 0.01,
+                linear.output = FALSE
+        )
+        # Plot the neural network
+        plot(Students_net, rep = "best")
+        
+        # Predict on test fold
+        predictions_local <- compute(Students_net, test_in_local)$net.result
+        
+        # Convert outputs to class labels
+        predicted_classes_local <- apply(predictions_local, 1, function(row) {
+                c("High", "Medium", "Low")[which.max(row)]
+        })
+        
+        actual_classes_local <- apply(test_truth_local, 1, function(row) {
+                c("High", "Medium", "Low")[which.max(row)]
+        })
+        
+        # Compute confusion matrix & accuracy
+        conf_mat_local <- table(Predicted = predicted_classes_local, Actual = actual_classes_local)
+        fold_accuracy  <- sum(diag(conf_mat_local)) / sum(conf_mat_local)
+        
+        # Print confusion matrix
+        cat("Confusion Matrix for this fold:\n")
+        print(conf_mat_local)
+
+        # Print fold accuracy
+        cat(sprintf("Fold Accuracy: %.4f\n", fold_accuracy))
+
+        
+        return(fold_accuracy)
+}
+```
+We then performed a 10-fold Cross-Validation that splits the data into 10 folds, trains the model on 9 folds, and tests on the 10th to measure accuracy across all folds. The outputs are the average performance.
+
+<button id="toggle-button9" onclick="toggleCode('code-container9', 'toggle-button9')">Show Code</button>
+<div id="code-container9" class="code-container">
+<pre>
+```{r} 
+# Perform 10-Fold Cross-Validation 
+set.seed(123)  
+folds <- createFolds(Students$Exam_Score_Category, k = 10, list = TRUE)
+
+cv_accuracies <- numeric(length(folds))
+
+for (i in seq_along(folds)) {
+        # Indices for this fold
+        test_idx  <- folds[[i]]
+        train_idx <- setdiff(seq_len(nrow(Students)), test_idx)
+        
+        # Build the training and testing splits
+        fold_train_raw <- Students[train_idx, ]
+        fold_test_raw  <- Students[test_idx, ]
+        
+        # Run the training and evaluation pipeline on this fold
+        cv_accuracies[i] <- do_training_and_eval(
+                train_raw_data = fold_train_raw,
+                test_raw_data  = fold_test_raw
+        )
+        
+        #cat(sprintf("Fold %d accuracy: %.4f\n", i, cv_accuracies[i]))
+}
+```
+</pre> </div> <p>
+```{r} 
+# Compute average accuracy across all 10 folds
+cv_mean_accuracy <- mean(cv_accuracies)
+cat("10-Fold CV Average Accuracy:", cv_mean_accuracy, "\n")
+```
+The neural network achieved an average cross-validation accuracy of 71.75%, comparable to the SVM models. The confusion matrix for one fold indicates strong classification performance for "Low" and "Medium" categories, but some misclassification occurred in the "High" category. These results suggest that the neural network effectively captures complex patterns and handles imbalanced data, though further tuning could improve its ability to classify underrepresented categories like "High." Overall, the neural network demonstrates competitive performance and robustness for this classification task.
+
+#NN model with hidden layer 5 and 4 node, the learning rate parameter was excluded
+In this implementation, a neural network with two hidden layers (5 and 4 nodes) was trained to classify Exam_Score_Category (High, Medium, Low) based on predictors like Hours_Studied. The data was preprocessed by normalizing numerical features and applying one-hot encoding for the categorical target variable. SMOTE (Synthetic Minority Oversampling Technique) was used to balance the training data by oversampling the minority categories. A 10-fold cross-validation approach was used to evaluate the model's performance, with metrics such as fold accuracy and confusion matrices calculated for each fold.
+
+```{r}
+# Normalization
+normalize <- function(x) {
+        if (max(x) == min(x)) return(rep(0, length(x)))  
+        (x - min(x)) / (max(x) - min(x))
+}
+
+one_hot_target <- function(df) {
+        df %>%
+                mutate(
+                        High   = ifelse(Exam_Score_Category == "High", 1, 0),
+                        Medium = ifelse(Exam_Score_Category == "Medium", 1, 0),
+                        Low    = ifelse(Exam_Score_Category == "Low", 1, 0)
+                ) %>%
+                select(-Exam_Score_Category)  
+}
+
+```
+
+
+```{r}
+# Define the main training and evaluation function 
+do_training_and_eval <- function(train_raw_data, test_raw_data) {
+        # Preprocess the train set
+        train_prep_local <- train_raw_data %>%
+                one_hot_target() %>%
+                mutate(across(where(is.factor), as.numeric)) %>%
+                mutate(across(where(is.numeric), normalize)) %>%
+                mutate(
+                        Category = factor(
+                                case_when(
+                                        High == 1   ~ "High",
+                                        Medium == 1 ~ "Medium",
+                                        Low == 1    ~ "Low"
+                                ),
+                                levels = c("High", "Medium", "Low")
+                        )
+                )
+        
+        # oversampling the training set
+        train_upsampled_local <- upSample(
+                x    = train_prep_local %>% select(-High, -Medium, -Low, -Category),
+                y    = train_prep_local$Category,
+                list = FALSE
+        ) %>%
+                mutate(
+                        High   = ifelse(Class == "High", 1, 0),
+                        Medium = ifelse(Class == "Medium", 1, 0),
+                        Low    = ifelse(Class == "Low", 1, 0)
+                ) %>%
+                select(-Class)
+        
+        # Preprocess the test set
+        test_prep_local <- test_raw_data %>%
+                one_hot_target() %>%
+                mutate(across(where(is.factor), as.numeric)) %>%
+                mutate(across(where(is.numeric), normalize))
+        
+        # Separate input and output for test
+        test_in_local    <- test_prep_local %>% select(-High, -Medium, -Low)
+        test_truth_local <- test_prep_local %>% select(High, Medium, Low)
+        
+        # Train the neural network
+        set.seed(123)
+        Students_net <- neuralnet(
+                High + Medium + Low ~ .,
+                data = train_upsampled_local,
+                hidden = c(5, 4),  # 2 hidden layers (5 nodes, then 4 nodes)
+                linear.output = FALSE
+        )
+        # Plot the neural network
+        plot(Students_net, rep = "best")
+        
+        # Predict on test fold
+        predictions_local <- compute(Students_net, test_in_local)$net.result
+        
+        # Convert outputs to class labels
+        predicted_classes_local <- apply(predictions_local, 1, function(row) {
+                c("High", "Medium", "Low")[which.max(row)]
+        })
+        
+        actual_classes_local <- apply(test_truth_local, 1, function(row) {
+                c("High", "Medium", "Low")[which.max(row)]
+        })
+        
+        # Compute confusion matrix & accuracy
+        conf_mat_local <- table(Predicted = predicted_classes_local, Actual = actual_classes_local)
+        fold_accuracy  <- sum(diag(conf_mat_local)) / sum(conf_mat_local)
+        
+        # Print confusion matrix
+        cat("Confusion Matrix for this fold:\n")
+        print(conf_mat_local)
+
+        # Print fold accuracy
+        cat(sprintf("Fold Accuracy: %.4f\n", fold_accuracy))
+
+        
+        return(fold_accuracy)
+}
+```
+<button id="toggle-button10" onclick="toggleCode('code-container10', 'toggle-button10')">Show Code</button>
+<div id="code-container10" class="code-container">
+<pre>
+```{r} 
+# Perform 10-Fold Cross-Validation 
+set.seed(123)  
+folds <- createFolds(Students$Exam_Score_Category, k = 10, list = TRUE)
+
+cv_accuracies <- numeric(length(folds))
+
+for (i in seq_along(folds)) {
+        # Indices for this fold
+        test_idx  <- folds[[i]]
+        train_idx <- setdiff(seq_len(nrow(Students)), test_idx)
+        
+        # Build the training and testing splits
+        fold_train_raw <- Students[train_idx, ]
+        fold_test_raw  <- Students[test_idx, ]
+        
+        # Run the training and evaluation pipeline on this fold
+        cv_accuracies[i] <- do_training_and_eval(
+                train_raw_data = fold_train_raw,
+                test_raw_data  = fold_test_raw
+        )
+        
+        #cat(sprintf("Fold %d accuracy: %.4f\n", i, cv_accuracies[i]))
+}
+```
+</pre> </div> <p>
+```{r} 
+# Compute average accuracy across all 10 folds
+cv_mean_accuracy <- mean(cv_accuracies)
+cat("10-Fold CV Average Accuracy:", cv_mean_accuracy, "\n")
+```
+
+The neural network was trained without explicitly specifying a learning rate, and its performance was evaluated by comparing predicted class labels with the actual class labels. The average cross-validation accuracy across the 10 folds was 71.46%, and the confusion matrix for one fold indicates strong performance in classifying "Low" and "Medium" categories but weaker performance in classifying the "High" category, where more misclassifications occurred.
+
+The neural network achieved an average cross-validation accuracy of 71.46%, which is slightly lower than the previous neural network model (71.75%) that used 7 and 5 nodes in its hidden layers and included a learning rate parameter. The confusion matrix highlights that while the model effectively distinguishes "Low" and "Medium" categories, it struggles with accurately predicting the "High" category, similar to the previous model.
+
+#CONCLUSIONS
+This project evaluated various machine learning models, including linear regression, Generalized Linear Models (GLMs), Generalized Additive Models (GAMs), Support Vector Machines (SVMs) with linear and radial kernels, and neural networks, to predict student exam score categories (High, Medium, Low). The linear models, including GLMs and GAMs, performed well in capturing straightforward relationships, with GAMs slightly outperforming due to their flexibility in modeling non-linear patterns. The linear SVM achieved the highest accuracy (72.98%) for simpler relationships, while the radial SVM (72.2% accuracy) and neural networks (71.75% and 71.46% cross-validation accuracy) excelled in capturing more complex and non-linear patterns. SMOTE was used effectively in neural networks to address class imbalances, though all models struggled with accurately predicting the "High" category.
+The most influential factors across all models were hours studied and attendance, which consistently drove better performance. Additionally, previous scores, motivation level, and parental involvement significantly contributed to outcomes, emphasizing the combined importance of personal habits and external support systems.  
+Overall, all the approaches emphasized the importance of fostering good study habits, maintaining attendance, and creating supportive environments to enhance student performance. This project highlights the value of machine learning in understanding and predicting academic outcomes, providing actionable insights for educators and policymakers.
+
+
+
